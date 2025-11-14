@@ -23,6 +23,24 @@ function mapPlatform(platform) {
   }
 }
 
+// Helper to parse a board_id profile into simplified stats
+function parseProfile(fullProfile) {
+  const stats = fullProfile.season_statistics;
+  const profileInfo = fullProfile.profile;
+
+  return {
+    rank: profileInfo.rank || 0,
+    rankPoints: profileInfo.rank_points || 0,
+    kills: stats.kills || 0,
+    deaths: stats.deaths || 0,
+    wins: stats.match_outcomes.wins || 0,
+    losses: stats.match_outcomes.losses || 0,
+    abandons: stats.match_outcomes.abandons || 0,
+    kd: stats.deaths ? (stats.kills / stats.deaths).toFixed(2) : 'N/A',
+    matchesPlayed: (stats.match_outcomes.wins || 0) + (stats.match_outcomes.losses || 0) + (stats.match_outcomes.abandons || 0)
+  };
+}
+
 app.get('/r6/:platform/:username', async (req, res) => {
   const { platform, username } = req.params;
   const cacheKey = `${platform}:${username}`;
@@ -48,33 +66,26 @@ app.get('/r6/:platform/:username', async (req, res) => {
       return res.status(404).json({ error: 'Stats not found for this player.' });
     }
 
-    // Extract PC/Xbox/PSN platform profile
     const pfProfile = data.platform_families_full_profiles.find(pf => pf.platform_family.toLowerCase() === platform.toLowerCase());
     if (!pfProfile) return res.status(404).json({ error: 'Platform stats not found.' });
 
-    // Get ranked stats (change to 'standard' for casual/general)
+    const result = { ranked: null, standard: null };
+
+    // Extract ranked stats
     const rankedBoard = pfProfile.board_ids_full_profiles.find(b => b.board_id === 'ranked');
-    if (!rankedBoard || !rankedBoard.full_profiles.length) {
-      return res.status(404).json({ error: 'Ranked stats not found for this player.' });
+    if (rankedBoard?.full_profiles?.length) {
+      result.ranked = parseProfile(rankedBoard.full_profiles[0]);
     }
 
-    const rankedProfile = rankedBoard.full_profiles[0];
-    const stats = rankedProfile.season_statistics;
-    const profileInfo = rankedProfile.profile;
+    // Extract casual/standard stats
+    const standardBoard = pfProfile.board_ids_full_profiles.find(b => b.board_id === 'standard');
+    if (standardBoard?.full_profiles?.length) {
+      result.standard = parseProfile(standardBoard.full_profiles[0]);
+    }
 
-    const result = {
-      username,
-      platform: profileInfo.platform_family,
-      rank: profileInfo.rank || 0,
-      rankPoints: profileInfo.rank_points || 0,
-      kills: stats.kills || 0,
-      deaths: stats.deaths || 0,
-      wins: stats.match_outcomes.wins || 0,
-      losses: stats.match_outcomes.losses || 0,
-      abandons: stats.match_outcomes.abandons || 0,
-      kd: stats.deaths ? (stats.kills / stats.deaths).toFixed(2) : 'N/A',
-      matchesPlayed: (stats.match_outcomes.wins || 0) + (stats.match_outcomes.losses || 0) + (stats.match_outcomes.abandons || 0)
-    };
+    // Include username and platform
+    result.username = username;
+    result.platform = platform;
 
     // Cache the result
     cache.set(cacheKey, { data: result, timestamp: Date.now() });
