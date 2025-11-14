@@ -1,61 +1,91 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
-const cheerio = require('cheerio');
-const app = express();
-const port = 3000;
 
-app.get('/r6stats/:platform/:username', async (req, res) => {
+const app = express();
+const port = process.env.PORT || 3000;
+
+// Simple in-memory cache
+const cache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Map platform param to R6Data API values
+function mapPlatform(platform) {
+  switch (platform.toLowerCase()) {
+    case 'pc':
+      return { platformType: 'uplay', platformFamilies: 'pc' };
+    case 'xbox':
+      return { platformType: 'xbl', platformFamilies: 'xbox' };
+    case 'psn':
+      return { platformType: 'psn', platformFamilies: 'psn' };
+    default:
+      return null;
+  }
+}
+
+app.get('/r6/:platform/:username', async (req, res) => {
   const { platform, username } = req.params;
+  const cacheKey = `${platform}:${username}`;
+
+  // Return cached data if still fresh
+  if (cache.has(cacheKey)) {
+    const cached = cache.get(cacheKey);
+    if (Date.now() - cached.timestamp < CACHE_TTL) {
+      return res.json(cached.data);
+    } else {
+      cache.delete(cacheKey);
+    }
+  }
+
+  const mapped = mapPlatform(platform);
+  if (!mapped) return res.status(400).json({ error: 'Invalid platform. Use pc, xbox, or psn.' });
 
   try {
-    const url = `https://r6.tracker.network/profile/${platform}/${encodeURIComponent(username)}/overview`;
+    const apiUrl = `https://api.r6data.eu/api/stats?type=stats&nameOnPlatform=${encodeURIComponent(username)}&platformType=${mapped.platformType}&platform_families=${mapped.platformFamilies}`;
+    const { data } = await axios.get(apiUrl);
 
-    const { data: html } = await axios.get(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-        'Referer': 'https://r6.tracker.network/',
-        'Connection': 'keep-alive',
-      }
-    });
-
-    const $ = cheerio.load(html);
-
-    // The stats are in divs with class "trn-defstat__value"
-    const statsElements = $('.trn-defstat__value');
-
-    if (!statsElements || statsElements.length === 0) {
-      return res.status(404).json({ error: 'Player not found or stats not available' });
+    if (!data?.platform_families_full_profiles?.length) {
+      return res.status(404).json({ error: 'Stats not found for this player.' });
     }
 
-    const level = $(statsElements[0]).text().trim();
-    const kd = $(statsElements[1]).text().trim();
-    const wins = $(statsElements[2]).text().trim();
-    const losses = $(statsElements[3]).text().trim();
-    const winPercent = $(statsElements[4]).text().trim();
-    const matchesPlayed = $(statsElements[5]).text().trim();
+    // Extract PC/Xbox/PSN platform profile
+    const pfProfile = data.platform_families_full_profiles.find(pf => pf.platform_family.toLowerCase() === platform.toLowerCase());
+    if (!pfProfile) return res.status(404).json({ error: 'Platform stats not found.' });
 
-    const stats = {
+    // Get ranked stats (change to 'standard' for casual/general)
+    const rankedBoard = pfProfile.board_ids_full_profiles.find(b => b.board_id === 'ranked');
+    if (!rankedBoard || !rankedBoard.full_profiles.length) {
+      return res.status(404).json({ error: 'Ranked stats not found for this player.' });
+    }
+
+    const rankedProfile = rankedBoard.full_profiles[0];
+    const stats = rankedProfile.season_statistics;
+    const profileInfo = rankedProfile.profile;
+
+    const result = {
       username,
-      platform,
-      level,
-      kd,
-      wins,
-      losses,
-      winPercent,
-      matchesPlayed
+      platform: profileInfo.platform_family,
+      rank: profileInfo.rank || 0,
+      rankPoints: profileInfo.rank_points || 0,
+      kills: stats.kills || 0,
+      deaths: stats.deaths || 0,
+      wins: stats.match_outcomes.wins || 0,
+      losses: stats.match_outcomes.losses || 0,
+      abandons: stats.match_outcomes.abandons || 0,
+      kd: stats.deaths ? (stats.kills / stats.deaths).toFixed(2) : 'N/A',
+      matchesPlayed: (stats.match_outcomes.wins || 0) + (stats.match_outcomes.losses || 0) + (stats.match_outcomes.abandons || 0)
     };
 
-    res.json(stats);
+    // Cache the result
+    cache.set(cacheKey, { data: result, timestamp: Date.now() });
 
+    return res.json(result);
   } catch (error) {
-    console.error(error.message);
-    res.status(500).json({ error: 'Failed to fetch stats' });
+    console.error(`Error fetching R6Data stats for ${username} on ${platform}:`, error.message);
+    return res.status(500).json({ error: 'Failed to fetch stats from API.' });
   }
 });
 
-
-
-app.listen(port, () => console.log(`R6 Tracker scraper API running at http://localhost:${port}`));
+app.listen(port, () => {
+  console.log(`R6Data proxy API running at http://localhost:${port}`);
+});
