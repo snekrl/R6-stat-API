@@ -1,6 +1,6 @@
 # R6 API Proxy
 
-A simple Node.js server that fetches R6 stats using the R6Data API and caches responses for 5 minutes. Used by the Discord bot to avoid hitting the API directly.
+A simple Node.js server that fetches R6 stats using the R6Data API and caches responses for 5 minutes. Used by snek bot to avoid hitting the API directly.
 
 ## Features:
 
